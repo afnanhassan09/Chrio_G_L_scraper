@@ -38,13 +38,29 @@ class LinkedInScraper:
         options.add_argument("--disable-backgrounding-occluded-windows")
         options.add_argument("--disable-renderer-backgrounding")
 
+        # Additional options for server environments
+        options.add_argument("--disable-crash-reporter")
+        options.add_argument("--disable-in-process-stack-traces")
+        options.add_argument("--disable-logging")
+        options.add_argument("--disable-dev-tools")
+        options.add_argument("--log-level=3")
+        options.add_argument("--silent")
+
         # Window size for headless mode
         options.add_argument("--window-size=1920,1080")
 
         # User agent to avoid detection
         options.add_argument(
-            "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            "--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         )
+
+        # Try to find Chrome binary in common locations
+        chrome_binary = self._find_chrome_binary()
+        if chrome_binary:
+            print(f"Using Chrome binary: {chrome_binary}")
+            options.binary_location = chrome_binary
+        else:
+            print("Chrome binary not found, using system default")
 
         # Use webdriver-manager to handle Chrome binary location with retry logic
         from webdriver_manager.chrome import ChromeDriverManager
@@ -64,9 +80,28 @@ class LinkedInScraper:
                     if os.path.exists(cache_dir):
                         shutil.rmtree(cache_dir)
 
-                # Download and install ChromeDriver
-                driver_path = ChromeDriverManager().install()
-                print(f"ChromeDriver manager returned path: {driver_path}")
+                # Check if Chrome is installed first
+                chrome_installed = self._check_chrome_installation()
+
+                try:
+                    # Download and install ChromeDriver
+                    if chrome_installed:
+                        driver_path = ChromeDriverManager().install()
+                    else:
+                        # Fallback: Use specific version when Chrome detection fails
+                        print(
+                            "Chrome not detected, using fallback ChromeDriver version..."
+                        )
+                        driver_path = ChromeDriverManager(
+                            version="120.0.6099.109"
+                        ).install()
+                    print(f"ChromeDriver manager returned path: {driver_path}")
+                except Exception as wdm_error:
+                    print(f"Webdriver-manager failed: {wdm_error}")
+                    # Try manual ChromeDriver installation as last resort
+                    driver_path = self._install_chromedriver_manually()
+                    if not driver_path:
+                        raise wdm_error
 
                 # Fix: webdriver-manager sometimes returns wrong file path
                 # Let's find the actual chromedriver.exe in the directory
@@ -1227,6 +1262,163 @@ class LinkedInScraper:
             except NoSuchElementException:
                 continue
         return None
+
+    def _check_chrome_installation(self) -> bool:
+        """Check if Chrome browser is installed on the system"""
+        import subprocess
+        import platform
+
+        chrome_commands = []
+        system = platform.system().lower()
+
+        if system == "windows":
+            chrome_commands = [
+                "chrome.exe",
+                "google-chrome.exe",
+                r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+                r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+            ]
+        else:  # Linux/Mac
+            chrome_commands = [
+                "google-chrome",
+                "google-chrome-stable",
+                "google-chrome-beta",
+                "google-chrome-dev",
+                "chromium-browser",
+                "chromium",
+            ]
+
+        for cmd in chrome_commands:
+            try:
+                result = subprocess.run(
+                    [cmd, "--version"], capture_output=True, text=True, timeout=5
+                )
+                if result.returncode == 0:
+                    print(f"Found Chrome: {cmd} - {result.stdout.strip()}")
+                    return True
+            except (
+                subprocess.TimeoutExpired,
+                subprocess.CalledProcessError,
+                FileNotFoundError,
+            ):
+                continue
+
+        print("Chrome browser not found on system")
+        return False
+
+    def _find_chrome_binary(self) -> Optional[str]:
+        """Find Chrome binary in common installation locations"""
+        import platform
+
+        chrome_paths = []
+        system = platform.system().lower()
+
+        if system == "windows":
+            chrome_paths = [
+                r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+                r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+                os.path.expanduser(
+                    "~\\AppData\\Local\\Google\\Chrome\\Application\\chrome.exe"
+                ),
+            ]
+        elif system == "darwin":  # macOS
+            chrome_paths = [
+                "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+                "/Applications/Chromium.app/Contents/MacOS/Chromium",
+            ]
+        else:  # Linux
+            chrome_paths = [
+                "/usr/bin/google-chrome",
+                "/usr/bin/google-chrome-stable",
+                "/usr/bin/google-chrome-beta",
+                "/usr/bin/google-chrome-dev",
+                "/usr/bin/chromium-browser",
+                "/usr/bin/chromium",
+                "/opt/google/chrome/chrome",
+                "/snap/bin/chromium",
+            ]
+
+        for path in chrome_paths:
+            if os.path.exists(path) and os.access(path, os.X_OK):
+                return path
+
+        return None
+
+    def _install_chromedriver_manually(self) -> Optional[str]:
+        """Manual ChromeDriver installation for server environments"""
+        import subprocess
+        import platform
+        import urllib.request
+        import zipfile
+        import tempfile
+
+        try:
+            print("Attempting manual ChromeDriver installation...")
+
+            # Determine system architecture
+            system = platform.system().lower()
+            machine = platform.machine().lower()
+
+            if system == "linux":
+                if "x86_64" in machine or "amd64" in machine:
+                    driver_url = "https://chromedriver.storage.googleapis.com/120.0.6099.109/chromedriver_linux64.zip"
+                    driver_name = "chromedriver"
+                else:
+                    print("Unsupported Linux architecture")
+                    return None
+            elif system == "windows":
+                driver_url = "https://chromedriver.storage.googleapis.com/120.0.6099.109/chromedriver_win32.zip"
+                driver_name = "chromedriver.exe"
+            elif system == "darwin":  # macOS
+                driver_url = "https://chromedriver.storage.googleapis.com/120.0.6099.109/chromedriver_mac64.zip"
+                driver_name = "chromedriver"
+            else:
+                print(f"Unsupported system: {system}")
+                return None
+
+            # Create temp directory for download
+            with tempfile.TemporaryDirectory() as temp_dir:
+                zip_path = os.path.join(temp_dir, "chromedriver.zip")
+
+                print(f"Downloading ChromeDriver from: {driver_url}")
+                urllib.request.urlretrieve(driver_url, zip_path)
+
+                # Extract the driver
+                with zipfile.ZipFile(zip_path, "r") as zip_ref:
+                    zip_ref.extractall(temp_dir)
+
+                # Find the extracted driver
+                extracted_driver = os.path.join(temp_dir, driver_name)
+                if not os.path.exists(extracted_driver):
+                    # Sometimes it's in a subdirectory
+                    for root, dirs, files in os.walk(temp_dir):
+                        if driver_name in files:
+                            extracted_driver = os.path.join(root, driver_name)
+                            break
+
+                if not os.path.exists(extracted_driver):
+                    print("Failed to extract ChromeDriver")
+                    return None
+
+                # Create final destination
+                final_dir = os.path.expanduser("~/.chromedriver")
+                os.makedirs(final_dir, exist_ok=True)
+                final_path = os.path.join(final_dir, driver_name)
+
+                # Copy driver to final location
+                import shutil
+
+                shutil.copy2(extracted_driver, final_path)
+
+                # Make executable
+                os.chmod(final_path, 0o755)
+
+                print(f"ChromeDriver manually installed at: {final_path}")
+                return final_path
+
+        except Exception as e:
+            print(f"Manual ChromeDriver installation failed: {e}")
+            return None
 
     def close(self):
         """Close the browser"""
