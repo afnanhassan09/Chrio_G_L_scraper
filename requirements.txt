@@ -1,16 +1,12 @@
 # Core FastAPI and server dependencies
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
-python-multipart==0.0.6
 
 # GitHub scraping dependencies
 requests==2.31.0
-PyJWT==2.8.0
 
 # LinkedIn scraping dependencies (Selenium)
 selenium==4.15.2
-beautifulsoup4==4.12.2
-lxml>=6.0.0
 
 # Chrome/WebDriver management
 webdriver-manager==4.0.1
@@ -18,5 +14,5 @@ webdriver-manager==4.0.1
 # Data processing
 pydantic==1.10.12  # Stable version without Rust dependencies
 
-# Optional: Logging and monitoring
+# Environment variables
 python-dotenv==1.0.0 
