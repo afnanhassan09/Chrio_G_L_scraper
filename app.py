@@ -140,7 +140,7 @@ async def scrape_linkedin_profile(request: LinkedInScrapeRequest):
                 status_code=500,
                 detail="LinkedIn credentials not configured. Please provide email/password or set LINKEDIN_EMAIL/LINKEDIN_PASSWORD environment variables.",
             )
-
+        print(request)
         # Call the scraper function
         result = LinkedIn_Scraper.scrape_linkedin_profile(
             request.applicant_id, request.linkedin_url, email, password

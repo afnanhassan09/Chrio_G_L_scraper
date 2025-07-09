@@ -12,7 +12,7 @@ selenium==4.15.2
 webdriver-manager==4.0.1
 
 # Data processing
-pydantic
+pydantic>=2.8.0  # Python 3.13 compatible version
 
 # Environment variables
 python-dotenv==1.0.0 

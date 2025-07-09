@@ -43,15 +43,103 @@ class LinkedInScraper:
 
         # User agent to avoid detection
         options.add_argument(
-            "--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         )
 
-        # Use webdriver-manager to handle Chrome binary location
+        # Use webdriver-manager to handle Chrome binary location with retry logic
         from webdriver_manager.chrome import ChromeDriverManager
         from selenium.webdriver.chrome.service import Service
+        import os
+        import shutil
 
-        service = Service(ChromeDriverManager().install())
-        self.driver = webdriver.Chrome(service=service, options=options)
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                print(f"Setting up ChromeDriver (attempt {attempt + 1}/{max_retries})")
+
+                # Clear cache on retry attempts to force fresh download
+                if attempt > 0:
+                    print("Clearing webdriver-manager cache...")
+                    cache_dir = os.path.expanduser("~/.wdm")
+                    if os.path.exists(cache_dir):
+                        shutil.rmtree(cache_dir)
+
+                # Download and install ChromeDriver
+                driver_path = ChromeDriverManager().install()
+                print(f"ChromeDriver manager returned path: {driver_path}")
+
+                # Fix: webdriver-manager sometimes returns wrong file path
+                # Let's find the actual chromedriver.exe in the directory
+                if os.path.isfile(driver_path):
+                    driver_dir = os.path.dirname(driver_path)
+                else:
+                    driver_dir = driver_path
+
+                print(f"Looking for chromedriver.exe in directory: {driver_dir}")
+
+                # Find the actual chromedriver executable
+                possible_names = ["chromedriver.exe", "chromedriver"]
+                actual_driver_path = None
+
+                for name in possible_names:
+                    test_path = os.path.join(driver_dir, name)
+                    if os.path.exists(test_path):
+                        actual_driver_path = test_path
+                        print(f"Found ChromeDriver executable at: {actual_driver_path}")
+                        break
+
+                # If not found in the direct directory, search subdirectories
+                if not actual_driver_path:
+                    print("Searching subdirectories for chromedriver.exe...")
+                    for root, dirs, files in os.walk(driver_dir):
+                        for name in possible_names:
+                            if name in files:
+                                actual_driver_path = os.path.join(root, name)
+                                print(
+                                    f"Found ChromeDriver executable at: {actual_driver_path}"
+                                )
+                                break
+                        if actual_driver_path:
+                            break
+
+                if not actual_driver_path:
+                    raise FileNotFoundError(
+                        f"ChromeDriver executable not found in {driver_dir}"
+                    )
+
+                # Verify the driver file exists and is executable
+                if not os.path.exists(actual_driver_path):
+                    raise FileNotFoundError(
+                        f"ChromeDriver not found at {actual_driver_path}"
+                    )
+
+                # Make executable (Linux/Mac compatibility)
+                if not os.access(actual_driver_path, os.X_OK):
+                    print("Making ChromeDriver executable...")
+                    os.chmod(actual_driver_path, 0o755)
+
+                driver_path = actual_driver_path
+
+                service = Service(driver_path)
+                self.driver = webdriver.Chrome(service=service, options=options)
+                print("ChromeDriver setup successful!")
+                break
+
+            except Exception as e:
+                print(f"Attempt {attempt + 1} failed: {str(e)}")
+                if attempt == max_retries - 1:
+                    # Last attempt failed
+                    error_msg = (
+                        f"Failed to setup ChromeDriver after {max_retries} attempts. "
+                    )
+                    error_msg += "This might be due to Chrome browser not being installed or incompatible ChromeDriver version. "
+                    error_msg += f"Last error: {str(e)}"
+                    raise RuntimeError(error_msg)
+
+                # Wait before retry
+                import time
+
+                time.sleep(2)
         self.wait = WebDriverWait(self.driver, 10)  # Reduced wait time
 
     def login(self, email: str, password: str):
@@ -79,6 +167,10 @@ class LinkedInScraper:
 
     def validate_linkedin_url(self, url: str) -> str:
         """Validate and format LinkedIn profile URL"""
+        # Check if URL is None or empty
+        if not url:
+            raise ValueError("LinkedIn profile URL cannot be empty or None")
+
         # Remove any query parameters
         url = url.split("?")[0]
 
@@ -1054,7 +1146,7 @@ class LinkedInScraper:
                 )
                 for elem in skills_elements:
                     text = elem.text.strip()
-                    if "skills:" in text.lower():
+                    if text and "skills:" in text.lower():
                         # Extract skills part after "Skills:"
                         skills_part = text.split("Skills:")[-1].strip()
                         certificate_data["skills"] = skills_part
@@ -1145,6 +1237,13 @@ class LinkedInScraper:
 def scrape_linkedin_profile(
     applicant_id: str, profile_url: str, email: str = None, password: str = None
 ) -> Dict:
+
+    # Validate required parameters
+    if not profile_url:
+        raise ValueError("LinkedIn profile URL is required")
+
+    if not applicant_id:
+        raise ValueError("Applicant ID is required")
 
     if not email or not password:
         load_dotenv()
