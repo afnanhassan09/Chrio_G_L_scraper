@@ -1,0 +1,35 @@
+services:
+  - type: web
+    name: unified-scraper
+    runtime: docker
+    plan: standard
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    envVars:
+      - key: GITHUB_TOKEN
+        sync: false
+      - key: LINKEDIN_EMAIL
+        sync: false
+      - key: LINKEDIN_PASSWORD
+        sync: false
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      - key: DISPLAY
+        value: ":99"
+    # Resource allocation for Chrome-based scraping
+    disk:
+      name: data
+      sizeGB: 10
+      mountPath: /data
+    # Auto-deploy on git push
+    autoDeploy: true
+    # Health check configuration
+    healthCheck:
+      path: /health
+      timeoutSeconds: 30
+      intervalSeconds: 60
+      failureThreshold: 3
+    # Build configuration
+    buildCommand: echo "Docker build will handle dependencies"
+    startCommand: sh -c "Xvfb :99 -screen 0 1920x1080x24 > /dev/null 2>&1 & exec gunicorn app:app -w 2 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:$PORT --timeout 120"

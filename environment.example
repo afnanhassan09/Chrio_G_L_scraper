@@ -1,0 +1,23 @@
+# GitHub Scraper Configuration
+GITHUB_TOKEN=your_github_personal_access_token_here
+
+# LinkedIn Scraper Configuration  
+LINKEDIN_EMAIL=your_linkedin_email@example.com
+LINKEDIN_PASSWORD=your_linkedin_password
+
+# Render Configuration (automatically set by Render)
+PORT=8000
+
+# Application Configuration
+PYTHONUNBUFFERED=1
+DISPLAY=:99
+
+# Optional: Add any additional environment variables your app needs
+# MAX_WORKERS=10
+
+# Instructions for Render deployment:
+# 1. Create a new Web Service on Render
+# 2. Connect your GitHub repository
+# 3. Select the deploy/ folder as the root directory
+# 4. Set the environment variables above in Render dashboard
+# 5. Render will automatically build and deploy using the Dockerfile 
