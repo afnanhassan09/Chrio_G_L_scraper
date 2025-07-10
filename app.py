@@ -34,6 +34,8 @@ class LinkedInScrapeRequest(BaseModel):
     linkedin_url: str
     email: Optional[str] = None
     password: Optional[str] = None
+    email_password: Optional[str] = None
+    enable_email_verification: Optional[bool] = True
 
 
 # Response Models
@@ -87,10 +89,18 @@ async def linkedin_health_check():
     """LinkedIn scraper health check"""
     email = os.getenv("LINKEDIN_EMAIL")
     password = os.getenv("LINKEDIN_PASSWORD")
+    email_password = os.getenv("EMAIL_PASSWORD") or os.getenv("EMAIL_APP_PASSWORD")
+
     return {
         "status": "healthy" if (email and password) else "configuration_error",
         "service": "linkedin-scraper",
         "credentials_configured": bool(email and password),
+        "email_verification_available": bool(email_password),
+        "features": {
+            "basic_scraping": bool(email and password),
+            "automatic_email_verification": bool(email_password),
+            "manual_verification_fallback": True,
+        },
     }
 
 
@@ -141,9 +151,14 @@ async def scrape_linkedin_profile(request: LinkedInScrapeRequest):
                 detail="LinkedIn credentials not configured. Please provide email/password or set LINKEDIN_EMAIL/LINKEDIN_PASSWORD environment variables.",
             )
         print(request)
-        # Call the scraper function
+        # Call the scraper function with email verification support
         result = LinkedIn_Scraper.scrape_linkedin_profile(
-            request.applicant_id, request.linkedin_url, email, password
+            applicant_id=request.applicant_id,
+            profile_url=request.linkedin_url,
+            email=email,
+            password=password,
+            email_password=request.email_password,
+            enable_email_verification=request.enable_email_verification,
         )
 
         return LinkedInScrapeResponse(**result)

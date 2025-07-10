@@ -38,7 +38,61 @@ LINKEDIN_EMAIL=your-email@example.com
 LINKEDIN_PASSWORD=your-linkedin-password
 ```
 
-### 4. Optional Environment Variables
+### 3.5. Email Verification Automation (Recommended)
+
+To enable automatic email verification code handling:
+
+```bash
+# Email automation credentials
+EMAIL_PASSWORD=your-email-app-password
+# OR
+EMAIL_APP_PASSWORD=your-email-app-password
+```
+
+**⚠️ Important Email Setup:**
+
+**For Gmail:**
+1. Enable 2-Factor Authentication
+2. Generate App Password: [Google Account Settings](https://myaccount.google.com/apppasswords)
+3. Use the 16-character app password (not your regular password)
+
+**For Outlook/Hotmail:**
+1. Enable 2-Factor Authentication
+2. Generate App Password: [Microsoft Account Security](https://account.microsoft.com/security)
+3. Use the generated app password
+
+**For Yahoo:**
+1. Enable 2-Factor Authentication
+2. Generate App Password: [Yahoo Account Security](https://account.yahoo.com/account/security)
+3. Use the generated app password
+
+**Supported Email Providers:**
+- ✅ Gmail (gmail.com)
+- ✅ Outlook (outlook.com, hotmail.com, live.com)
+- ✅ Yahoo (yahoo.com, ymail.com)
+- ✅ AOL (aol.com)
+- ✅ iCloud (icloud.com, me.com, mac.com)
+- ✅ Custom IMAP servers
+
+### 4. Bright Data Proxy Configuration (Recommended for Production)
+
+To avoid IP blocks and improve scraping reliability, configure Bright Data rotating proxies:
+
+```bash
+# Bright Data proxy settings (optional - defaults provided)
+BRIGHTDATA_PROXY_HOST=brd.superproxy.io
+BRIGHTDATA_PROXY_PORT=33335
+BRIGHTDATA_PROXY_USER=brd-customer-hl_37fca7c2-zone-linkedin_scraper
+BRIGHTDATA_PROXY_PASS=xo5nwe0e1bt2
+```
+
+**Note**: The proxy credentials above are examples. For production use:
+
+1. Sign up for [Bright Data](https://brightdata.com)
+2. Create a "LinkedIn Scraper" zone
+3. Replace the credentials with your actual zone credentials
+
+### 5. Optional Environment Variables
 
 ```bash
 PYTHONUNBUFFERED=1
@@ -91,8 +145,9 @@ POST /linkedin/scrape
 
 - **FastAPI Application**: Main web service
 - **GitHub Scraper**: Lightweight API-based scraping
-- **LinkedIn Scraper**: Browser-based scraping with Chrome
-- **Chrome + Selenium**: Headless browser for LinkedIn
+- **LinkedIn Scraper**: Browser-based scraping with Chrome + Bright Data proxy
+- **Chrome + Selenium**: Headless browser for LinkedIn with rotating IP support
+- **Bright Data Proxy**: Rotating residential IPs to avoid blocks (optional)
 - **Gunicorn**: Production WSGI server
 
 ### Resource Requirements
@@ -142,7 +197,18 @@ POST /linkedin/scrape
 
 - **GitHub 401**: Verify GITHUB_TOKEN is valid and has correct permissions
 - **LinkedIn login fails**: Check credentials and account status
+- **LinkedIn security challenges**: Check logs for challenge type (2FA, CAPTCHA, etc.)
+- **IP blocks**: Configure Bright Data proxy or try different LinkedIn account
 - **Timeout errors**: LinkedIn scraping may take 30-60 seconds
+- **Proxy connection fails**: Verify Bright Data credentials and zone configuration
+
+#### Email Verification Issues
+
+- **Email connection failed**: Verify app password (not regular password) is used
+- **No verification code found**: Check email arrives within 5 minutes, verify LinkedIn sends to correct email
+- **Auto-fill failed**: Manual intervention will be available as fallback
+- **IMAP not supported**: Ensure email provider supports IMAP access
+- **Authentication errors**: Enable 2FA and generate fresh app password
 
 ### Debug Commands
 
@@ -183,6 +249,15 @@ print(response.json())
 response = requests.post(f"{BASE_URL}/linkedin/scrape", json={
     "applicant_id": "12345",
     "linkedin_url": "https://linkedin.com/in/username"
+})
+print(response.json())
+
+# LinkedIn scraping with email verification
+response = requests.post(f"{BASE_URL}/linkedin/scrape", json={
+    "applicant_id": "12345",
+    "linkedin_url": "https://linkedin.com/in/username",
+    "email_password": "your-email-app-password",  # Optional: if not in env
+    "enable_email_verification": True
 })
 print(response.json())
 ```

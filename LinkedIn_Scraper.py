@@ -8,24 +8,256 @@ import json
 from typing import Dict, List, Optional
 import re
 import os
+import zipfile
+import shutil
+import imaplib
+import email
+from email.mime.text import MIMEText
+import email.utils
 from dotenv import load_dotenv
 
 
+class EmailVerificationHandler:
+    def __init__(self, email_address, email_password, imap_server=None):
+        self.email_address = email_address
+        self.email_password = email_password
+        self.imap_server = imap_server or self._detect_imap_server(email_address)
+        self.connection = None
+
+    def _detect_imap_server(self, email_address):
+        """Auto-detect IMAP server based on email domain"""
+        domain = email_address.split("@")[1].lower()
+
+        servers = {
+            "gmail.com": "imap.gmail.com",
+            "outlook.com": "outlook.office365.com",
+            "hotmail.com": "outlook.office365.com",
+            "live.com": "outlook.office365.com",
+            "yahoo.com": "imap.mail.yahoo.com",
+            "ymail.com": "imap.mail.yahoo.com",
+            "aol.com": "imap.aol.com",
+            "icloud.com": "imap.mail.me.com",
+            "me.com": "imap.mail.me.com",
+            "mac.com": "imap.mail.me.com",
+        }
+
+        return servers.get(domain, "imap." + domain)
+
+    def connect(self):
+        """Connect to email server"""
+        try:
+            print(f"📧 Connecting to email server: {self.imap_server}")
+            self.connection = imaplib.IMAP4_SSL(self.imap_server)
+            self.connection.login(self.email_address, self.email_password)
+            print("✅ Email connection established successfully")
+            return True
+        except Exception as e:
+            print(f"❌ Email connection failed: {str(e)}")
+            print("💡 Make sure you're using an app password for Gmail/Outlook")
+            return False
+
+    def disconnect(self):
+        """Disconnect from email server"""
+        if self.connection:
+            try:
+                self.connection.logout()
+                print("📧 Email connection closed")
+            except:
+                pass
+
+    def fetch_linkedin_verification_code(self, max_age_minutes=5):
+        """Fetch the latest LinkedIn verification code from emails"""
+        if not self.connection:
+            if not self.connect():
+                return None
+
+        try:
+            # Select inbox
+            self.connection.select("INBOX")
+
+            # Search for recent LinkedIn emails
+            search_criteria = [
+                'FROM "linkedin"',
+                'FROM "noreply@linkedin.com"',
+                'FROM "security@linkedin.com"',
+                'SUBJECT "verification"',
+                'SUBJECT "code"',
+                'SUBJECT "security"',
+            ]
+
+            verification_code = None
+
+            for criteria in search_criteria:
+                try:
+                    print(f"🔍 Searching emails with criteria: {criteria}")
+
+                    # Search for emails from the last few minutes
+                    typ, data = self.connection.search(None, criteria)
+
+                    if data[0]:
+                        email_ids = data[0].split()
+                        # Check latest emails first
+                        for email_id in reversed(
+                            email_ids[-10:]
+                        ):  # Check last 10 emails
+                            typ, msg_data = self.connection.fetch(email_id, "(RFC822)")
+                            email_message = email.message_from_bytes(msg_data[0][1])
+
+                            # Check email age
+                            date_tuple = email.utils.parsedate_tz(email_message["Date"])
+                            if date_tuple:
+                                email_timestamp = email.utils.mktime_tz(date_tuple)
+                                current_timestamp = time.time()
+                                age_minutes = (current_timestamp - email_timestamp) / 60
+
+                                if age_minutes > max_age_minutes:
+                                    continue  # Skip old emails
+
+                            # Extract verification code
+                            code = self._extract_verification_code(email_message)
+                            if code:
+                                print(f"✅ Found verification code: {code}")
+                                return code
+
+                except Exception as e:
+                    print(f"⚠️ Search error for {criteria}: {str(e)}")
+                    continue
+
+            print("❌ No verification code found in recent emails")
+            return None
+
+        except Exception as e:
+            print(f"❌ Error fetching verification code: {str(e)}")
+            return None
+
+    def _extract_verification_code(self, email_message):
+        """Extract verification code from LinkedIn email"""
+        try:
+            # Get email content
+            subject = email_message.get("Subject", "").lower()
+            sender = email_message.get("From", "").lower()
+
+            # Only process LinkedIn emails
+            if "linkedin" not in sender:
+                return None
+
+            print(f"📧 Processing email: {subject}")
+
+            # Get email body
+            body = ""
+            if email_message.is_multipart():
+                for part in email_message.walk():
+                    if part.get_content_type() == "text/plain":
+                        body += part.get_payload(decode=True).decode()
+                    elif part.get_content_type() == "text/html":
+                        body += part.get_payload(decode=True).decode()
+            else:
+                body = email_message.get_payload(decode=True).decode()
+
+            # Extract verification code patterns
+            code_patterns = [
+                r"verification code[:\s]+(\d{4,8})",  # "verification code: 123456"
+                r"code[:\s]+(\d{4,8})",  # "code: 123456"
+                r"enter[:\s]+(\d{4,8})",  # "enter: 123456"
+                r"(\d{6})",  # standalone 6-digit number
+                r"(\d{4})",  # standalone 4-digit number
+                r"security code[:\s]+(\d{4,8})",  # "security code: 123456"
+                r"pin[:\s]+(\d{4,8})",  # "PIN: 123456"
+            ]
+
+            for pattern in code_patterns:
+                matches = re.findall(pattern, body, re.IGNORECASE)
+                if matches:
+                    # Return the first valid code (4-8 digits)
+                    for match in matches:
+                        if 4 <= len(match) <= 8 and match.isdigit():
+                            print(f"🔍 Extracted code using pattern: {pattern}")
+                            return match
+
+            return None
+
+        except Exception as e:
+            print(f"⚠️ Error extracting code from email: {str(e)}")
+            return None
+
+
 class LinkedInScraper:
-    def __init__(self):
+    def __init__(self, email_handler=None):
         self.driver = None
         self.wait = None
+        self.email_handler = email_handler
+
+    def create_proxy_auth_extension(
+        self, proxy_host, proxy_port, proxy_user, proxy_pass
+    ):
+        """Creates a Chrome extension for proxy authentication"""
+        manifest_json = """
+        {
+            "version": "1.0.0",
+            "manifest_version": 2,
+            "name": "Chrome Proxy",
+            "permissions": [
+                "proxy",
+                "tabs",
+                "unlimitedStorage",
+                "storage",
+                "<all_urls>",
+                "webRequest",
+                "webRequestBlocking"
+            ],
+            "background": {
+                "scripts": ["background.js"]
+            },
+            "minimum_chrome_version":"22.0.0"
+        }
+        """
+
+        background_js = f"""
+        var config = {{
+            mode: "fixed_servers",
+            rules: {{
+                singleProxy: {{
+                    scheme: "http",
+                    host: "{proxy_host}",
+                    port: parseInt({proxy_port})
+                }},
+                bypassList: ["localhost"]
+            }}
+        }};
+
+        chrome.proxy.settings.set({{value: config, scope: "regular"}}, function() {{}});
+
+        chrome.webRequest.onAuthRequired.addListener(
+            function(details) {{
+                return {{
+                    authCredentials: {{
+                        username: "{proxy_user}",
+                        password: "{proxy_pass}"
+                    }}
+                }};
+            }},
+            {{urls: ["<all_urls>"]}},
+            ['blocking']
+        );
+        """
+
+        pluginfile = "proxy_auth_plugin.zip"
+        with zipfile.ZipFile(pluginfile, "w") as zp:
+            zp.writestr("manifest.json", manifest_json)
+            zp.writestr("background.js", background_js)
+        return pluginfile
 
     def setup_driver(self):
-        """Initialize the Chrome WebDriver with appropriate options"""
+        """Initialize the Chrome WebDriver with Bright Data rotating proxy"""
         options = webdriver.ChromeOptions()
 
-        # Render/Cloud platform compatibility options
-        options.add_argument("--headless=new")
+        # Essential browser hardening and stealth options
+        options.add_argument(
+            "--headless=new"
+        )  # ENABLED: Running in headless mode for AWS deployment
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--disable-gpu")
-        options.add_argument("--disable-extensions")
         options.add_argument("--disable-infobars")
         options.add_argument("--disable-notifications")
         options.add_argument("--disable-popup-blocking")
@@ -38,7 +270,7 @@ class LinkedInScraper:
         options.add_argument("--disable-backgrounding-occluded-windows")
         options.add_argument("--disable-renderer-backgrounding")
 
-        # Additional options for server environments
+        # Additional stealth options for server environments
         options.add_argument("--disable-crash-reporter")
         options.add_argument("--disable-in-process-stack-traces")
         options.add_argument("--disable-logging")
@@ -49,137 +281,143 @@ class LinkedInScraper:
         # Window size for headless mode
         options.add_argument("--window-size=1920,1080")
 
-        # User agent to avoid detection
+        # Enhanced user agent for better stealth
         options.add_argument(
             "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36"
         )
 
-        # Try to find Chrome binary in common locations
+        # 🔐 Bright Data proxy credentials (loaded from environment for security)
+        load_dotenv()
+        proxy_host = os.getenv("BRIGHTDATA_PROXY_HOST", "brd.superproxy.io")
+        proxy_port = int(os.getenv("BRIGHTDATA_PROXY_PORT", "33335"))
+        proxy_user = os.getenv(
+            "BRIGHTDATA_PROXY_USER", "brd-customer-hl_37fca7c2-zone-linkedin_scraper"
+        )
+        proxy_pass = os.getenv("BRIGHTDATA_PROXY_PASS", "xo5nwe0e1bt2")
+
+        print(f"🌐 Setting up Bright Data rotating proxy: {proxy_host}:{proxy_port}")
+
+        # 🔌 Create and inject proxy authentication plugin
+        proxy_plugin_path = None
+        try:
+            proxy_plugin_path = self.create_proxy_auth_extension(
+                proxy_host, proxy_port, proxy_user, proxy_pass
+            )
+            options.add_extension(proxy_plugin_path)
+            print("✅ Proxy authentication plugin created and loaded")
+        except Exception as e:
+            print(f"⚠️ Warning: Failed to create proxy plugin: {e}")
+            print("🔄 Continuing without proxy - may face IP blocks")
+
+        # Find Chrome binary with fallback logic
         chrome_binary = self._find_chrome_binary()
         if chrome_binary:
-            print(f"Using Chrome binary: {chrome_binary}")
+            print(f"🔍 Using Chrome binary: {chrome_binary}")
             options.binary_location = chrome_binary
         else:
-            print("Chrome binary not found, using system default")
+            print("🔍 Chrome binary not found, using system default")
 
-        # Use webdriver-manager to handle Chrome binary location with retry logic
+        # Use webdriver-manager with retry logic
         from webdriver_manager.chrome import ChromeDriverManager
         from selenium.webdriver.chrome.service import Service
-        import os
-        import shutil
 
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                print(f"Setting up ChromeDriver (attempt {attempt + 1}/{max_retries})")
+                print(
+                    f"🚀 Setting up ChromeDriver (attempt {attempt + 1}/{max_retries})"
+                )
 
-                # Clear cache on retry attempts to force fresh download
+                # Clear cache on retry attempts
                 if attempt > 0:
-                    print("Clearing webdriver-manager cache...")
+                    print("🧹 Clearing webdriver-manager cache...")
                     cache_dir = os.path.expanduser("~/.wdm")
                     if os.path.exists(cache_dir):
                         shutil.rmtree(cache_dir)
 
-                # Check if Chrome is installed first
+                # Check if Chrome is available
                 chrome_installed = self._check_chrome_installation()
 
-                try:
-                    # Download and install ChromeDriver
-                    if chrome_installed:
-                        driver_path = ChromeDriverManager().install()
-                    else:
-                        # Fallback: Use specific version when Chrome detection fails
-                        print(
-                            "Chrome not detected, using fallback ChromeDriver version..."
-                        )
-                        driver_path = ChromeDriverManager(
-                            version="120.0.6099.109"
-                        ).install()
-                    print(f"ChromeDriver manager returned path: {driver_path}")
-                except Exception as wdm_error:
-                    print(f"Webdriver-manager failed: {wdm_error}")
-                    # Try manual ChromeDriver installation as last resort
-                    driver_path = self._install_chromedriver_manually()
-                    if not driver_path:
-                        raise wdm_error
-
-                # Fix: webdriver-manager sometimes returns wrong file path
-                # Let's find the actual chromedriver.exe in the directory
-                if os.path.isfile(driver_path):
-                    driver_dir = os.path.dirname(driver_path)
+                if chrome_installed:
+                    driver_path = ChromeDriverManager().install()
                 else:
-                    driver_dir = driver_path
-
-                print(f"Looking for chromedriver.exe in directory: {driver_dir}")
-
-                # Find the actual chromedriver executable
-                possible_names = ["chromedriver.exe", "chromedriver"]
-                actual_driver_path = None
-
-                for name in possible_names:
-                    test_path = os.path.join(driver_dir, name)
-                    if os.path.exists(test_path):
-                        actual_driver_path = test_path
-                        print(f"Found ChromeDriver executable at: {actual_driver_path}")
-                        break
-
-                # If not found in the direct directory, search subdirectories
-                if not actual_driver_path:
-                    print("Searching subdirectories for chromedriver.exe...")
-                    for root, dirs, files in os.walk(driver_dir):
-                        for name in possible_names:
-                            if name in files:
-                                actual_driver_path = os.path.join(root, name)
-                                print(
-                                    f"Found ChromeDriver executable at: {actual_driver_path}"
-                                )
-                                break
-                        if actual_driver_path:
-                            break
-
-                if not actual_driver_path:
-                    raise FileNotFoundError(
-                        f"ChromeDriver executable not found in {driver_dir}"
+                    print(
+                        "⚠️ Chrome not detected, using fallback ChromeDriver version..."
                     )
+                    driver_path = ChromeDriverManager(
+                        version="120.0.6099.109"
+                    ).install()
 
-                # Verify the driver file exists and is executable
-                if not os.path.exists(actual_driver_path):
-                    raise FileNotFoundError(
-                        f"ChromeDriver not found at {actual_driver_path}"
-                    )
+                print(f"📍 ChromeDriver path: {driver_path}")
 
-                # Make executable (Linux/Mac compatibility)
-                if not os.access(actual_driver_path, os.X_OK):
-                    print("Making ChromeDriver executable...")
-                    os.chmod(actual_driver_path, 0o755)
+                # Handle potential path issues (webdriver-manager sometimes returns wrong file)
+                actual_driver_path = self._find_actual_chromedriver(driver_path)
 
-                driver_path = actual_driver_path
-
-                service = Service(driver_path)
+                service = Service(actual_driver_path)
                 self.driver = webdriver.Chrome(service=service, options=options)
-                print("ChromeDriver setup successful!")
+
+                print("🎉 ChromeDriver setup successful with Bright Data proxy!")
+                print("🤖 Browser is running in HEADLESS mode for AWS deployment")
+                print(
+                    "📧 Email verification automation will handle challenges automatically"
+                )
                 break
 
             except Exception as e:
-                print(f"Attempt {attempt + 1} failed: {str(e)}")
+                print(f"❌ Attempt {attempt + 1} failed: {str(e)}")
                 if attempt == max_retries - 1:
-                    # Last attempt failed
                     error_msg = (
                         f"Failed to setup ChromeDriver after {max_retries} attempts. "
                     )
-                    error_msg += "This might be due to Chrome browser not being installed or incompatible ChromeDriver version. "
                     error_msg += f"Last error: {str(e)}"
                     raise RuntimeError(error_msg)
-
-                # Wait before retry
-                import time
-
                 time.sleep(2)
-        self.wait = WebDriverWait(self.driver, 10)  # Reduced wait time
+
+        # Clean up proxy plugin file after driver starts
+        if proxy_plugin_path and os.path.exists(proxy_plugin_path):
+            try:
+                os.remove(proxy_plugin_path)
+                print("🧹 Proxy plugin file cleaned up")
+            except:
+                pass  # Ignore cleanup errors
+
+        self.wait = WebDriverWait(self.driver, 10)
+
+    def _find_actual_chromedriver(self, driver_path):
+        """Find the actual chromedriver executable from webdriver-manager path"""
+        if os.path.isfile(driver_path):
+            driver_dir = os.path.dirname(driver_path)
+        else:
+            driver_dir = driver_path
+
+        # Look for chromedriver executable
+        possible_names = ["chromedriver.exe", "chromedriver"]
+
+        for name in possible_names:
+            test_path = os.path.join(driver_dir, name)
+            if os.path.exists(test_path):
+                # Make executable if needed
+                if not os.access(test_path, os.X_OK):
+                    os.chmod(test_path, 0o755)
+                return test_path
+
+        # Search subdirectories if not found
+        for root, dirs, files in os.walk(driver_dir):
+            for name in possible_names:
+                if name in files:
+                    full_path = os.path.join(root, name)
+                    if not os.access(full_path, os.X_OK):
+                        os.chmod(full_path, 0o755)
+                    return full_path
+
+        raise FileNotFoundError(f"ChromeDriver executable not found in {driver_dir}")
 
     def login(self, email: str, password: str):
         """Login to LinkedIn"""
+        import sys
+
         print("🔐 Initiating LinkedIn login...")
+        sys.stdout.flush()  # Force immediate output
         self.driver.get("https://www.linkedin.com/login")
 
         # Enter email
@@ -188,11 +426,13 @@ class LinkedInScraper:
         )
         email_field.send_keys(email)
         print("✅ Email entered")
+        sys.stdout.flush()
 
         # Enter password
         password_field = self.driver.find_element(By.ID, "password")
         password_field.send_keys(password)
         print("✅ Password entered")
+        sys.stdout.flush()
 
         # Click login button
         login_button = self.driver.find_element(
@@ -200,14 +440,23 @@ class LinkedInScraper:
         )
         login_button.click()
         print("🔄 Login button clicked, waiting for authentication...")
+        sys.stdout.flush()
 
         # Verify login success
-        if self._verify_login_success():
-            print("🎉 SUCCESS: Login successful! Reached LinkedIn homepage/feed")
-        else:
-            raise Exception(
-                "❌ FAILED: Login failed or could not reach LinkedIn homepage"
-            )
+        try:
+            if self._verify_login_success():
+                print("🎉 SUCCESS: Login successful! Reached LinkedIn homepage/feed")
+                sys.stdout.flush()
+            else:
+                print("❌ FAILED: Login failed or could not reach LinkedIn homepage")
+                sys.stdout.flush()
+                raise Exception(
+                    "❌ FAILED: Login failed or could not reach LinkedIn homepage"
+                )
+        except Exception as login_error:
+            print(f"🚨 Login verification failed: {str(login_error)}")
+            sys.stdout.flush()
+            raise
 
     def _verify_login_success(self) -> bool:
         """Verify that login was successful by checking for LinkedIn homepage elements"""
@@ -220,6 +469,9 @@ class LinkedInScraper:
             try:
                 current_url = self.driver.current_url
                 print(f"📍 Current URL: {current_url}")
+                import sys
+
+                sys.stdout.flush()
 
                 # Check if we're on the feed/homepage
                 homepage_indicators = [
@@ -245,18 +497,140 @@ class LinkedInScraper:
                 # Check for LinkedIn security challenges first
                 if "linkedin.com/checkpoint/challenge" in current_url:
                     print("🔒 LinkedIn security challenge detected!")
+                    sys.stdout.flush()
                     challenge_info = self._identify_challenge_type()
                     if challenge_info:
                         print(f"📋 Challenge Details: {challenge_info}")
-                        # For now, we'll treat challenges as login failures since automation can't handle them
-                        # In the future, this could be extended to handle specific challenge types
-                        raise Exception(
-                            f"LinkedIn security challenge encountered: {challenge_info}"
+                        sys.stdout.flush()
+
+                        # Check if this is an email verification challenge
+                        is_email_verification = any(
+                            keyword in challenge_info.lower()
+                            for keyword in [
+                                "email",
+                                "verification code",
+                                "6-digit",
+                                "4-digit",
+                                "code input",
+                            ]
                         )
+
+                        verification_success = False
+
+                        # Try automatic email verification first
+                        if is_email_verification and self.email_handler:
+                            print(
+                                "📧 EMAIL VERIFICATION DETECTED - Attempting automatic resolution..."
+                            )
+                            sys.stdout.flush()
+
+                            try:
+                                # Wait a moment for the email to arrive
+                                print(
+                                    "⏳ Waiting 10 seconds for verification email to arrive..."
+                                )
+                                time.sleep(10)
+
+                                # Fetch verification code from email
+                                verification_code = (
+                                    self.email_handler.fetch_linkedin_verification_code()
+                                )
+
+                                if verification_code:
+                                    print(
+                                        f"📧 Retrieved verification code from email: {verification_code}"
+                                    )
+
+                                    # Auto-fill the verification code
+                                    if self._auto_fill_verification_code(
+                                        verification_code
+                                    ):
+                                        print(
+                                            "🎉 Automatic email verification successful!"
+                                        )
+                                        verification_success = True
+
+                                        # Wait for page to process and check if successful
+                                        time.sleep(3)
+                                        current_url_after_auto = self.driver.current_url
+                                        if (
+                                            "linkedin.com/checkpoint/challenge"
+                                            not in current_url_after_auto
+                                        ):
+                                            print(
+                                                "✅ Successfully moved past challenge page automatically!"
+                                            )
+                                            sys.stdout.flush()
+                                            continue  # Continue with login verification
+                                    else:
+                                        print(
+                                            "❌ Failed to auto-fill verification code"
+                                        )
+                                else:
+                                    print("❌ No verification code found in emails")
+
+                            except Exception as auto_error:
+                                print(
+                                    f"❌ Automatic verification failed: {str(auto_error)}"
+                                )
+
+                        # If automatic verification failed or not available, use manual intervention
+                        if not verification_success:
+                            if self.email_handler and is_email_verification:
+                                print(
+                                    "🔄 Automatic email verification failed, falling back to manual mode"
+                                )
+
+                            print("⏳ MANUAL INTERVENTION REQUIRED:")
+                            print(
+                                "   👆 Please complete the verification in the browser window"
+                            )
+                            print(
+                                "   ⏰ Waiting 15 seconds for you to enter verification code..."
+                            )
+                            print(
+                                "   🔄 Will automatically check if login succeeded after wait"
+                            )
+                            print(
+                                "   ✋ Take your time - the loop will continue checking until success"
+                            )
+                            sys.stdout.flush()
+
+                            # Wait 15 seconds for manual verification
+                            time.sleep(15)
+
+                        # Check current URL again after manual intervention
+                        current_url_after = self.driver.current_url
+                        print(f"📍 URL after manual intervention: {current_url_after}")
+                        sys.stdout.flush()
+
+                        # If still on challenge page, continue waiting in the loop
+                        if "linkedin.com/checkpoint/challenge" in current_url_after:
+                            print("⚠️ Still on challenge page - continuing to wait...")
+                            sys.stdout.flush()
+                            time.sleep(2)  # Brief pause before next iteration
+                            continue
+                        else:
+                            print("✅ Successfully moved past challenge page!")
+                            sys.stdout.flush()
+                            # Continue with normal login verification below
                     else:
-                        raise Exception(
-                            "LinkedIn security challenge encountered - type unknown"
-                        )
+                        print("❌ Challenge type could not be determined")
+                        print("⏳ Waiting 15 seconds anyway for manual intervention...")
+                        sys.stdout.flush()
+                        time.sleep(15)
+
+                        # Check if we moved past the unknown challenge
+                        current_url_after = self.driver.current_url
+                        if "linkedin.com/checkpoint/challenge" in current_url_after:
+                            print("❌ Still on unknown challenge page after waiting")
+                            sys.stdout.flush()
+                            raise Exception(
+                                "LinkedIn security challenge encountered - type unknown, manual intervention failed"
+                            )
+                        else:
+                            print("✅ Successfully moved past unknown challenge!")
+                            sys.stdout.flush()
 
                 # Check URL patterns that indicate successful login
                 success_url_patterns = [
@@ -322,6 +696,9 @@ class LinkedInScraper:
 
             print(f"📄 Page Title: {self.driver.title}")
             print(f"🔍 Analyzing challenge page...")
+            import sys
+
+            sys.stdout.flush()
 
             challenge_indicators = {
                 # Two-Factor Authentication
@@ -453,6 +830,7 @@ class LinkedInScraper:
 
                 if challenge_text:
                     print(f"📝 Challenge page text snippet: {challenge_text[:200]}...")
+                    sys.stdout.flush()
 
                     # Additional specific text analysis
                     if "enter the 6-digit code" in challenge_text:
@@ -486,6 +864,7 @@ class LinkedInScraper:
 
             if found_elements:
                 print(f"🎯 Detected page elements: {', '.join(found_elements)}")
+                sys.stdout.flush()
 
             # Compile final challenge description
             if detected_challenges:
@@ -503,6 +882,106 @@ class LinkedInScraper:
         except Exception as e:
             print(f"⚠️ Error identifying challenge type: {str(e)}")
             return f"Challenge detection error: {str(e)}"
+
+    def _auto_fill_verification_code(self, verification_code):
+        """Automatically fill verification code in LinkedIn challenge form"""
+        try:
+            print(f"🤖 Attempting to auto-fill verification code: {verification_code}")
+
+            # Common input field selectors for verification codes
+            input_selectors = [
+                "input[type='tel']",
+                "input[name*='pin']",
+                "input[name*='code']",
+                "input[name*='verif']",
+                "input[placeholder*='code']",
+                "input[placeholder*='verification']",
+                "input[placeholder*='PIN']",
+                "input[id*='code']",
+                "input[id*='pin']",
+                "input[id*='verif']",
+                "input[maxlength='6']",
+                "input[maxlength='4']",
+                "input[maxlength='8']",
+                ".form-control",
+                ".input-field",
+            ]
+
+            verification_input = None
+
+            # Try to find the input field
+            for selector in input_selectors:
+                try:
+                    elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                    for element in elements:
+                        if element.is_displayed() and element.is_enabled():
+                            verification_input = element
+                            print(f"✅ Found input field with selector: {selector}")
+                            break
+                    if verification_input:
+                        break
+                except Exception:
+                    continue
+
+            if not verification_input:
+                print("❌ Could not find verification code input field")
+                return False
+
+            # Clear and enter the verification code
+            verification_input.clear()
+            verification_input.send_keys(verification_code)
+            print(f"✅ Entered verification code: {verification_code}")
+
+            # Give a moment for any field validation
+            time.sleep(1)
+
+            # Find and click submit button
+            submit_selectors = [
+                "button[type='submit']",
+                "input[type='submit']",
+                "button[id*='submit']",
+                "button[id*='verify']",
+                "button[id*='continue']",
+                ".btn-primary",
+                ".submit-btn",
+                ".verify-btn",
+                ".continue-btn",
+                "button:contains('Verify')",
+                "button:contains('Submit')",
+                "button:contains('Continue')",
+                "[data-test-id*='submit']",
+                "[data-test-id*='verify']",
+            ]
+
+            submit_button = None
+            for selector in submit_selectors:
+                try:
+                    elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                    for element in elements:
+                        if element.is_displayed() and element.is_enabled():
+                            submit_button = element
+                            print(f"✅ Found submit button with selector: {selector}")
+                            break
+                    if submit_button:
+                        break
+                except Exception:
+                    continue
+
+            if submit_button:
+                submit_button.click()
+                print("✅ Clicked submit button")
+
+                # Wait for processing
+                print("⏳ Waiting for verification to process...")
+                time.sleep(3)
+                return True
+            else:
+                print("❌ Could not find submit button")
+                return False
+
+        except Exception as e:
+            print(f"❌ Error auto-filling verification code: {str(e)}")
+            return False
 
     def validate_linkedin_url(self, url: str) -> str:
         """Validate and format LinkedIn profile URL"""
@@ -1612,40 +2091,25 @@ class LinkedInScraper:
 
     def _find_chrome_binary(self) -> Optional[str]:
         """Find Chrome binary in common installation locations"""
-        import platform
+        possible_paths = [
+            # Linux
+            "/usr/bin/google-chrome",
+            "/usr/bin/google-chrome-stable",
+            "/usr/bin/chromium-browser",
+            "/usr/bin/chromium",
+            "/opt/google/chrome/chrome",
+            "/snap/bin/chromium",
+            # Windows
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+            # macOS
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "/Applications/Chromium.app/Contents/MacOS/Chromium",
+        ]
 
-        chrome_paths = []
-        system = platform.system().lower()
-
-        if system == "windows":
-            chrome_paths = [
-                r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-                r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-                os.path.expanduser(
-                    "~\\AppData\\Local\\Google\\Chrome\\Application\\chrome.exe"
-                ),
-            ]
-        elif system == "darwin":  # macOS
-            chrome_paths = [
-                "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-                "/Applications/Chromium.app/Contents/MacOS/Chromium",
-            ]
-        else:  # Linux
-            chrome_paths = [
-                "/usr/bin/google-chrome",
-                "/usr/bin/google-chrome-stable",
-                "/usr/bin/google-chrome-beta",
-                "/usr/bin/google-chrome-dev",
-                "/usr/bin/chromium-browser",
-                "/usr/bin/chromium",
-                "/opt/google/chrome/chrome",
-                "/snap/bin/chromium",
-            ]
-
-        for path in chrome_paths:
+        for path in possible_paths:
             if os.path.exists(path) and os.access(path, os.X_OK):
                 return path
-
         return None
 
     def _install_chromedriver_manually(self) -> Optional[str]:
@@ -1731,7 +2195,12 @@ class LinkedInScraper:
 
 
 def scrape_linkedin_profile(
-    applicant_id: str, profile_url: str, email: str = None, password: str = None
+    applicant_id: str,
+    profile_url: str,
+    email: str = None,
+    password: str = None,
+    email_password: str = None,
+    enable_email_verification: bool = True,
 ) -> Dict:
 
     # Validate required parameters
@@ -1751,23 +2220,103 @@ def scrape_linkedin_profile(
                 "LinkedIn credentials not found. Please provide email and password or set them in .env file"
             )
 
+    # Setup email verification handler if enabled
+    email_handler = None
+    if enable_email_verification:
+        # Get email password from parameter or environment
+        if not email_password:
+            load_dotenv()
+            email_password = os.getenv("EMAIL_PASSWORD") or os.getenv(
+                "EMAIL_APP_PASSWORD"
+            )
+
+        if email_password:
+            try:
+                print("📧 Setting up email verification handler...")
+                email_handler = EmailVerificationHandler(email, email_password)
+                if email_handler.connect():
+                    print("✅ Email verification handler ready")
+                else:
+                    print(
+                        "⚠️ Email connection failed - continuing without email automation"
+                    )
+                    email_handler = None
+            except Exception as e:
+                print(f"⚠️ Email handler setup failed: {str(e)}")
+                print("🔄 Continuing without email automation")
+                email_handler = None
+        else:
+            print("⚠️ No email password provided - email verification disabled")
+            print(
+                "💡 Set EMAIL_PASSWORD environment variable to enable email automation"
+            )
+
     # Initialize the scraper
-    scraper = LinkedInScraper()
+    scraper = LinkedInScraper(email_handler=email_handler)
     scraper.setup_driver()
 
     try:
+        print(f"🎯 Starting LinkedIn scraper for applicant: {applicant_id}")
+        print(f"🔗 Target profile: {profile_url}")
+        print(f"👤 Using email: {email}")
+        print("🤖 HEADLESS MODE: Automated email verification enabled")
+        print("📧 Email challenges will be handled automatically")
+        import sys
+
+        sys.stdout.flush()
+
         # Login to LinkedIn
+        print("🚀 Attempting LinkedIn login...")
         scraper.login(email, password)
+        print("✅ Login completed successfully!")
 
         # Scrape profile information
+        print("📊 Starting profile data extraction...")
         profile_data = scraper.get_profile_info(profile_url)
+        print("✅ Profile data extraction completed!")
+
         data = {"id": applicant_id, "source": "linkedin", "data": profile_data}
         return data
 
     except Exception as e:
+        # Print detailed error information before re-raising
+        print(f"❌ LinkedIn scraping failed with error: {str(e)}")
+        print(f"🔍 Error type: {type(e).__name__}")
+
+        # Try to get more browser information if available
+        try:
+            if scraper.driver:
+                current_url = scraper.driver.current_url
+                page_title = scraper.driver.title
+                print(f"📍 Browser was on: {current_url}")
+                print(f"📄 Page title: {page_title}")
+
+                # If it's a challenge page, try to identify it one more time
+                if "checkpoint/challenge" in current_url:
+                    print("🔒 Detected challenge page - attempting analysis...")
+                    try:
+                        challenge_info = scraper._identify_challenge_type()
+                        print(f"📋 Challenge analysis: {challenge_info}")
+                    except:
+                        print("⚠️ Could not analyze challenge page")
+        except:
+            print("⚠️ Could not retrieve browser state information")
+
+        # Re-raise with original error for proper error handling
         raise Exception(f"Error scraping profile: {str(e)}")
     finally:
-        scraper.close()
+        try:
+            scraper.close()
+            print("🧹 Browser closed successfully")
+        except:
+            print("⚠️ Warning: Could not close browser properly")
+
+        # Disconnect email handler
+        if email_handler:
+            try:
+                email_handler.disconnect()
+            except:
+                pass
 
 
 # Example usage:
