@@ -255,6 +255,20 @@ class LinkedInScraper:
         options.add_argument(
             "--headless=new"
         )  # ENABLED: Running in headless mode for AWS deployment
+
+        # Add random user agent rotation to avoid detection
+        import random
+
+        user_agents = [
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        ]
+        selected_user_agent = random.choice(user_agents)
+        options.add_argument(f"--user-agent={selected_user_agent}")
+        print(f"🔀 Using randomized user agent for stealth")
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--disable-gpu")
@@ -503,6 +517,19 @@ class LinkedInScraper:
                         print(f"📋 Challenge Details: {challenge_info}")
                         sys.stdout.flush()
 
+                        # Check if this is a CAPTCHA challenge (can't be automated)
+                        is_captcha_challenge = any(
+                            keyword in challenge_info.lower()
+                            for keyword in [
+                                "captcha",
+                                "recaptcha",
+                                "robot",
+                                "human verification",
+                                "image verification",
+                                "select all images",
+                            ]
+                        )
+
                         # Check if this is an email verification challenge
                         is_email_verification = any(
                             keyword in challenge_info.lower()
@@ -517,8 +544,57 @@ class LinkedInScraper:
 
                         verification_success = False
 
+                        # Handle CAPTCHA challenges in headless mode
+                        if is_captcha_challenge:
+                            print(
+                                "🤖 CAPTCHA detected in headless mode - implementing retry strategy"
+                            )
+                            sys.stdout.flush()
+
+                            # Check if we're in headless mode
+                            chrome_options = self.driver.capabilities.get(
+                                "goog:chromeOptions", {}
+                            )
+                            is_headless = any(
+                                "--headless" in str(arg)
+                                for arg in chrome_options.get("args", [])
+                            )
+
+                            if is_headless:
+                                print(
+                                    "🔄 Headless mode detected - CAPTCHA cannot be solved automatically"
+                                )
+                                print(
+                                    "🚀 Implementing retry with new session and IP rotation..."
+                                )
+                                sys.stdout.flush()
+
+                                # Close current session
+                                try:
+                                    self.driver.quit()
+                                    print("🧹 Closed browser session for retry")
+                                except:
+                                    pass
+
+                                # Import time for delay
+                                import time
+
+                                # Wait before retry to avoid rate limiting
+                                print("⏳ Waiting 30 seconds before retry...")
+                                time.sleep(30)
+
+                                # Raise specific exception to trigger retry at higher level
+                                raise Exception(
+                                    "CAPTCHA_CHALLENGE_DETECTED_RETRY_NEEDED"
+                                )
+                            else:
+                                print(
+                                    "👀 Visible mode - manual CAPTCHA solving required"
+                                )
+                                # Continue with manual intervention for visible mode
+
                         # Try automatic email verification first
-                        if is_email_verification and self.email_handler:
+                        elif is_email_verification and self.email_handler:
                             print(
                                 "📧 EMAIL VERIFICATION DETECTED - Attempting automatic resolution..."
                             )
@@ -2251,32 +2327,102 @@ def scrape_linkedin_profile(
                 "💡 Set EMAIL_PASSWORD environment variable to enable email automation"
             )
 
-    # Initialize the scraper
-    scraper = LinkedInScraper(email_handler=email_handler)
-    scraper.setup_driver()
+    # Retry logic for CAPTCHA challenges
+    max_retries = 3
+    retry_count = 0
+    import time
+    import sys
+
+    scraper = None
 
     try:
-        print(f"🎯 Starting LinkedIn scraper for applicant: {applicant_id}")
-        print(f"🔗 Target profile: {profile_url}")
-        print(f"👤 Using email: {email}")
-        print("🤖 HEADLESS MODE: Automated email verification enabled")
-        print("📧 Email challenges will be handled automatically")
-        import sys
+        while retry_count < max_retries:
+            try:
+                # Initialize the scraper (new instance for each retry)
+                scraper = LinkedInScraper(email_handler=email_handler)
+                scraper.setup_driver()
 
-        sys.stdout.flush()
+                retry_suffix = (
+                    f" (Attempt {retry_count + 1}/{max_retries})"
+                    if retry_count > 0
+                    else ""
+                )
+                print(
+                    f"🎯 Starting LinkedIn scraper for applicant: {applicant_id}{retry_suffix}"
+                )
+                print(f"🔗 Target profile: {profile_url}")
+                print(f"👤 Using email: {email}")
+                print("🤖 HEADLESS MODE: Automated email verification enabled")
+                print("📧 Email challenges will be handled automatically")
 
-        # Login to LinkedIn
-        print("🚀 Attempting LinkedIn login...")
-        scraper.login(email, password)
-        print("✅ Login completed successfully!")
+                if retry_count > 0:
+                    print(
+                        f"🔄 Retry attempt #{retry_count + 1} after CAPTCHA challenge"
+                    )
 
-        # Scrape profile information
-        print("📊 Starting profile data extraction...")
-        profile_data = scraper.get_profile_info(profile_url)
-        print("✅ Profile data extraction completed!")
+                sys.stdout.flush()
 
-        data = {"id": applicant_id, "source": "linkedin", "data": profile_data}
-        return data
+                # Login to LinkedIn
+                print("🚀 Attempting LinkedIn login...")
+                scraper.login(email, password)
+                print("✅ Login completed successfully!")
+
+                # Scrape profile information
+                print("📊 Starting profile data extraction...")
+                profile_data = scraper.get_profile_info(profile_url)
+                print("✅ Profile data extraction completed!")
+
+                data = {"id": applicant_id, "source": "linkedin", "data": profile_data}
+                return data
+
+            except Exception as e:
+                error_str = str(e)
+
+                # Check if this is a CAPTCHA retry exception
+                if "CAPTCHA_CHALLENGE_DETECTED_RETRY_NEEDED" in error_str:
+                    retry_count += 1
+                    print(
+                        f"🤖 CAPTCHA challenge detected - retry {retry_count}/{max_retries}"
+                    )
+
+                    # Close current scraper instance
+                    try:
+                        if scraper:
+                            scraper.close()
+                    except:
+                        pass
+
+                    if retry_count < max_retries:
+                        print(
+                            f"🔄 Preparing retry #{retry_count + 1} with new session..."
+                        )
+                        print(
+                            "🌐 IP rotation will occur automatically with proxy system"
+                        )
+
+                        # Progressive delay between retries
+                        delay = 60 * retry_count  # 0, 60, 120 seconds
+                        if delay > 0:
+                            print(
+                                f"⏳ Waiting {delay} seconds before retry to avoid rate limiting..."
+                            )
+                            time.sleep(delay)
+
+                        continue  # Try again with new session
+                    else:
+                        print("❌ Maximum retries exceeded for CAPTCHA challenges")
+                        print(
+                            "🚨 LinkedIn is consistently showing CAPTCHAs - may need manual intervention"
+                        )
+                        raise Exception(
+                            "CAPTCHA challenges exceeded maximum retry attempts"
+                        )
+                else:
+                    # Different type of error - re-raise immediately
+                    raise e
+
+        # This should never be reached, but just in case
+        raise Exception("Unexpected exit from retry loop")
 
     except Exception as e:
         # Print detailed error information before re-raising
@@ -2285,7 +2431,7 @@ def scrape_linkedin_profile(
 
         # Try to get more browser information if available
         try:
-            if scraper.driver:
+            if scraper and scraper.driver:
                 current_url = scraper.driver.current_url
                 page_title = scraper.driver.title
                 print(f"📍 Browser was on: {current_url}")
@@ -2306,8 +2452,9 @@ def scrape_linkedin_profile(
         raise Exception(f"Error scraping profile: {str(e)}")
     finally:
         try:
-            scraper.close()
-            print("🧹 Browser closed successfully")
+            if scraper:
+                scraper.close()
+                print("🧹 Browser closed successfully")
         except:
             print("⚠️ Warning: Could not close browser properly")
 
@@ -2315,6 +2462,7 @@ def scrape_linkedin_profile(
         if email_handler:
             try:
                 email_handler.disconnect()
+                print("📧 Email connection closed")
             except:
                 pass
 
