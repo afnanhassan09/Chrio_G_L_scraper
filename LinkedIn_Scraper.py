@@ -179,6 +179,7 @@ class LinkedInScraper:
 
     def login(self, email: str, password: str):
         """Login to LinkedIn"""
+        print("🔐 Initiating LinkedIn login...")
         self.driver.get("https://www.linkedin.com/login")
 
         # Enter email
@@ -186,19 +187,115 @@ class LinkedInScraper:
             EC.presence_of_element_located((By.ID, "username"))
         )
         email_field.send_keys(email)
+        print("✅ Email entered")
 
         # Enter password
         password_field = self.driver.find_element(By.ID, "password")
         password_field.send_keys(password)
+        print("✅ Password entered")
 
         # Click login button
         login_button = self.driver.find_element(
             By.CSS_SELECTOR, 'button[type="submit"]'
         )
         login_button.click()
+        print("🔄 Login button clicked, waiting for authentication...")
 
-        # Wait for login to complete
-        time.sleep(2)  # Reduced wait time
+        # Verify login success
+        if self._verify_login_success():
+            print("🎉 SUCCESS: Login successful! Reached LinkedIn homepage/feed")
+        else:
+            raise Exception(
+                "❌ FAILED: Login failed or could not reach LinkedIn homepage"
+            )
+
+    def _verify_login_success(self) -> bool:
+        """Verify that login was successful by checking for LinkedIn homepage elements"""
+        import time
+
+        max_wait_time = 15  # Maximum wait time for login
+        start_time = time.time()
+
+        while time.time() - start_time < max_wait_time:
+            try:
+                current_url = self.driver.current_url
+                print(f"📍 Current URL: {current_url}")
+
+                # Check if we're on the feed/homepage
+                homepage_indicators = [
+                    # LinkedIn feed/homepage selectors
+                    'nav[aria-label="Primary Navigation"]',  # Main navigation bar
+                    ".feed-container-theme",  # Feed container
+                    ".share-box-feed-entry",  # Share box
+                    ".scaffold-layout__main",  # Main layout
+                    '[data-test-id="nav-top-secondary"]',  # Secondary navigation
+                    ".global-nav",  # Global navigation
+                    "header.global-nav",  # Header navigation
+                ]
+
+                for selector in homepage_indicators:
+                    try:
+                        element = self.driver.find_element(By.CSS_SELECTOR, selector)
+                        if element.is_displayed():
+                            print(f"✅ Found homepage indicator: {selector}")
+                            return True
+                    except:
+                        continue
+
+                # Check URL patterns that indicate successful login
+                success_url_patterns = [
+                    "linkedin.com/feed",
+                    "linkedin.com/in/",
+                    "linkedin.com/mynetwork",
+                    "linkedin.com/jobs",
+                    "linkedin.com/messaging",
+                ]
+
+                for pattern in success_url_patterns:
+                    if pattern in current_url:
+                        print(
+                            f"✅ Detected successful login via URL pattern: {pattern}"
+                        )
+                        return True
+
+                # Check for error indicators
+                error_selectors = [
+                    ".form__label--error",  # Login error messages
+                    ".alert",  # General alerts
+                    '[data-js-module-id="guest-frontend-challenge-default"]',  # Challenge page
+                ]
+
+                for selector in error_selectors:
+                    try:
+                        if self.driver.find_element(By.CSS_SELECTOR, selector):
+                            print(f"❌ Login error detected: {selector}")
+                            return False
+                    except:
+                        continue
+
+                # If still on login page, continue waiting
+                if (
+                    "linkedin.com/login" in current_url
+                    or "linkedin.com/uas/login" in current_url
+                ):
+                    print("⏳ Still on login page, waiting...")
+                    time.sleep(1)
+                    continue
+
+                # If we're redirected somewhere else, assume success
+                if "linkedin.com" in current_url and "login" not in current_url:
+                    print(f"✅ Redirected away from login page to: {current_url}")
+                    return True
+
+                time.sleep(1)
+
+            except Exception as e:
+                print(f"⚠️ Error during login verification: {str(e)}")
+                time.sleep(1)
+                continue
+
+        print("❌ Login verification timeout - could not confirm successful login")
+        return False
 
     def validate_linkedin_url(self, url: str) -> str:
         """Validate and format LinkedIn profile URL"""
