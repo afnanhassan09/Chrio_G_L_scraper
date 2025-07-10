@@ -21,7 +21,7 @@ class LinkedInScraper:
         options = webdriver.ChromeOptions()
 
         # Render/Cloud platform compatibility options
-        options.add_argument("--headless")  # Required for server deployment
+        options.add_argument("--headless=new")
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--disable-gpu")
@@ -51,7 +51,7 @@ class LinkedInScraper:
 
         # User agent to avoid detection
         options.add_argument(
-            "--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36"
         )
 
         # Try to find Chrome binary in common locations
