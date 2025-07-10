@@ -242,6 +242,22 @@ class LinkedInScraper:
                     except:
                         continue
 
+                # Check for LinkedIn security challenges first
+                if "linkedin.com/checkpoint/challenge" in current_url:
+                    print("🔒 LinkedIn security challenge detected!")
+                    challenge_info = self._identify_challenge_type()
+                    if challenge_info:
+                        print(f"📋 Challenge Details: {challenge_info}")
+                        # For now, we'll treat challenges as login failures since automation can't handle them
+                        # In the future, this could be extended to handle specific challenge types
+                        raise Exception(
+                            f"LinkedIn security challenge encountered: {challenge_info}"
+                        )
+                    else:
+                        raise Exception(
+                            "LinkedIn security challenge encountered - type unknown"
+                        )
+
                 # Check URL patterns that indicate successful login
                 success_url_patterns = [
                     "linkedin.com/feed",
@@ -296,6 +312,197 @@ class LinkedInScraper:
 
         print("❌ Login verification timeout - could not confirm successful login")
         return False
+
+    def _identify_challenge_type(self) -> str:
+        """Identify the type of LinkedIn security challenge"""
+        try:
+            # Get page title and content for analysis
+            page_title = self.driver.title.lower()
+            page_source = self.driver.page_source.lower()
+
+            print(f"📄 Page Title: {self.driver.title}")
+            print(f"🔍 Analyzing challenge page...")
+
+            challenge_indicators = {
+                # Two-Factor Authentication
+                "2FA/Two-Factor Authentication": [
+                    "two-factor",
+                    "2fa",
+                    "authenticator",
+                    "verification code",
+                    "enter the code",
+                    "code from your",
+                    "authentication app",
+                ],
+                # Phone Verification
+                "Phone Verification": [
+                    "phone number",
+                    "mobile number",
+                    "phone verification",
+                    "enter your phone",
+                    "verify phone",
+                    "text message",
+                ],
+                # Email Verification
+                "Email Verification": [
+                    "email verification",
+                    "verify your email",
+                    "check your email",
+                    "email code",
+                    "confirmation email",
+                ],
+                # SMS Verification
+                "SMS Verification": [
+                    "sms",
+                    "text message",
+                    "verification code",
+                    "mobile code",
+                    "code sent to",
+                    "enter the 6-digit",
+                ],
+                # CAPTCHA
+                "CAPTCHA": [
+                    "captcha",
+                    "recaptcha",
+                    "i'm not a robot",
+                    "verify you're human",
+                    "image verification",
+                    "select all images",
+                ],
+                # Device Verification
+                "Device Verification": [
+                    "new device",
+                    "unrecognized device",
+                    "device verification",
+                    "trust this device",
+                    "remember this device",
+                ],
+                # Location/Unusual Activity
+                "Unusual Activity": [
+                    "unusual activity",
+                    "suspicious activity",
+                    "new location",
+                    "different location",
+                    "security alert",
+                ],
+                # Password/Security Questions
+                "Additional Security": [
+                    "security question",
+                    "verify identity",
+                    "additional verification",
+                    "confirm your identity",
+                    "account security",
+                ],
+            }
+
+            detected_challenges = []
+
+            # Check page content for challenge indicators
+            for challenge_type, indicators in challenge_indicators.items():
+                for indicator in indicators:
+                    if indicator in page_source or indicator in page_title:
+                        if challenge_type not in detected_challenges:
+                            detected_challenges.append(challenge_type)
+                        break
+
+            # Look for specific form elements and inputs
+            form_elements = {
+                "PIN/Code Input": [
+                    "input[type='tel']",
+                    "input[name*='pin']",
+                    "input[name*='code']",
+                    "input[placeholder*='code']",
+                    "input[placeholder*='verification']",
+                ],
+                "Phone Input": [
+                    "input[type='tel']",
+                    "input[name*='phone']",
+                    "input[name*='mobile']",
+                ],
+                "Email Input": ["input[type='email']", "input[name*='email']"],
+            }
+
+            for element_type, selectors in form_elements.items():
+                for selector in selectors:
+                    try:
+                        if self.driver.find_element(By.CSS_SELECTOR, selector):
+                            if element_type not in detected_challenges:
+                                detected_challenges.append(f"Form: {element_type}")
+                            break
+                    except:
+                        continue
+
+            # Check for specific challenge text content
+            try:
+                # Find main content areas
+                content_selectors = [
+                    ".challenge-page",
+                    ".checkpoint-challenge",
+                    ".challenge-content",
+                    "main",
+                    ".content",
+                ]
+
+                challenge_text = ""
+                for selector in content_selectors:
+                    try:
+                        element = self.driver.find_element(By.CSS_SELECTOR, selector)
+                        challenge_text += element.text.lower() + " "
+                    except:
+                        continue
+
+                if challenge_text:
+                    print(f"📝 Challenge page text snippet: {challenge_text[:200]}...")
+
+                    # Additional specific text analysis
+                    if "enter the 6-digit code" in challenge_text:
+                        detected_challenges.append("6-Digit Verification Code")
+                    elif "enter the 4-digit code" in challenge_text:
+                        detected_challenges.append("4-Digit PIN Code")
+                    elif "authenticator app" in challenge_text:
+                        detected_challenges.append("Authenticator App Required")
+                    elif "robot" in challenge_text or "captcha" in challenge_text:
+                        detected_challenges.append("Human Verification (CAPTCHA)")
+
+            except Exception as e:
+                print(f"⚠️ Error analyzing challenge text: {str(e)}")
+
+            # Check for common challenge page elements
+            challenge_elements = {
+                "reCAPTCHA": ".g-recaptcha",
+                "Phone Input": "input[type='tel']",
+                "Code Input": "input[maxlength='6'], input[maxlength='4']",
+                "Email Field": "input[type='email']",
+                "Submit Button": "button[type='submit'], input[type='submit']",
+            }
+
+            found_elements = []
+            for element_name, selector in challenge_elements.items():
+                try:
+                    if self.driver.find_element(By.CSS_SELECTOR, selector):
+                        found_elements.append(element_name)
+                except:
+                    continue
+
+            if found_elements:
+                print(f"🎯 Detected page elements: {', '.join(found_elements)}")
+
+            # Compile final challenge description
+            if detected_challenges:
+                challenge_summary = ", ".join(set(detected_challenges))
+                if found_elements:
+                    challenge_summary += (
+                        f" | Elements found: {', '.join(found_elements)}"
+                    )
+                return challenge_summary
+            elif found_elements:
+                return f"Challenge with elements: {', '.join(found_elements)}"
+            else:
+                return "Unknown challenge type - manual review required"
+
+        except Exception as e:
+            print(f"⚠️ Error identifying challenge type: {str(e)}")
+            return f"Challenge detection error: {str(e)}"
 
     def validate_linkedin_url(self, url: str) -> str:
         """Validate and format LinkedIn profile URL"""
